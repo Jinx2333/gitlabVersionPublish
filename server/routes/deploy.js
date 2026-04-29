@@ -94,10 +94,10 @@ router.post('/', async (req, res, next) => {
 
     const log = (line) => appendLog(jobId, line);
 
-    const onStep = ({ step, phase, at }) => {
-      appendStep(jobId, { step, phase, at });
-      if (phase === 'start') {
-        setDeployStep(projectId, step);
+    const onStep = (payload) => {
+      appendStep(jobId, payload);
+      if (payload.phase === 'start') {
+        setDeployStep(projectId, payload.step);
       }
     };
 

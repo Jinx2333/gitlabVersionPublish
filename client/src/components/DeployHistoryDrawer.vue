@@ -94,7 +94,7 @@ function openDetail(row) {
         <el-table-column
           prop="publisherIp"
           label="发布 IP"
-          width="130"
+          width="230"
           show-overflow-tooltip
         />
         <el-table-column label="结束时间" width="168">

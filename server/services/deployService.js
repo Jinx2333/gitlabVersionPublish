@@ -9,6 +9,7 @@ import simpleGit from 'simple-git';
 import { NodeSSH } from 'node-ssh';
 import { getGitlabAuth, getNvmHome, getDeployWorkRootBase } from '../config/env.js';
 import { cleanupStaleDeployWorkdirs } from './deployCleanup.js';
+import { summarizeRecentCommitters } from './gitRecentAuthors.js';
 
 /**
  * 将常见内网 / SSH 写法规范成可用 HTTP 克隆地址（再嵌入账号密码）
@@ -157,9 +158,9 @@ async function pathExists(p) {
   }
 }
 
-function emitStep(onStep, step, phase) {
+function emitStep(onStep, step, phase, extra = {}) {
   if (typeof onStep !== 'function') return;
-  onStep({ step, phase, at: new Date().toISOString() });
+  onStep({ step, phase, at: new Date().toISOString(), ...extra });
 }
 
 /**
@@ -195,7 +196,31 @@ export async function runDeploy(project, onLog, onStep) {
       '--depth',
       '1',
     ]);
-    emitStep(onStep, 'clone', 'end');
+
+    log(
+      `分析近 1 小时内提交成员（分支 ${project.branch}，用于敏捷遗漏核对）…`,
+    );
+    const recentCommitsSummary = await summarizeRecentCommitters(
+      repoDir,
+      project.branch,
+      {
+        hours: 1,
+        onLog: log,
+        deepen: 500,
+      },
+    );
+    const { authors, sinceIso } = recentCommitsSummary;
+    if (!authors?.length) {
+      log(
+        `[近1小时提交] 无记录或历史过浅（统计自 ${sinceIso}）。请确认他人已 push，或加深 fetch 是否成功。\n`,
+      );
+    } else {
+      const line = authors
+        .map((a) => `${a.name} <${a.email}> (${a.commitCount} 笔)`)
+        .join('；');
+      log(`[近1小时提交] 共 ${authors.length} 人：${line}\n`);
+    }
+    emitStep(onStep, 'clone', 'end', { recentCommitsSummary });
 
     const { env, targetNodePath } = createIsolatedNodeEnv(project.nodeVersion);
     log(`Node 隔离路径: ${targetNodePath}`);

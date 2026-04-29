@@ -51,6 +51,7 @@ function initTimeline() {
       end: null,
       status: 'pending',
       __tick: 0,
+      recentCommitsSummary: null,
     };
   }
 }
@@ -90,14 +91,19 @@ async function loadHistory() {
   }
 }
 
-function applyStepEvent({ step, phase, at }) {
+function applyStepEvent(payload) {
+  const { step, phase, at, recentCommitsSummary } = payload;
   if (!timelineState[step]) return;
   if (phase === 'start') {
     timelineState[step].start = at;
     timelineState[step].status = 'active';
+    timelineState[step].recentCommitsSummary = null;
   } else if (phase === 'end') {
     timelineState[step].end = at;
     timelineState[step].status = 'success';
+    if (recentCommitsSummary && Array.isArray(recentCommitsSummary.authors)) {
+      timelineState[step].recentCommitsSummary = recentCommitsSummary;
+    }
   }
 }
 
@@ -384,7 +390,7 @@ onBeforeUnmount(() => {
         <el-table-column
           prop="publisherIp"
           label="发布 IP"
-          width="130"
+          width="230"
           show-overflow-tooltip
         />
         <el-table-column
@@ -445,6 +451,32 @@ onBeforeUnmount(() => {
                 <div class="t-dur">
                   耗时：
                   <span :key="timelineState[id].__tick">{{ stepDurationText(id) }}</span>
+                </div>
+                <div
+                  v-if="
+                    id === 'clone' &&
+                    timelineState[id].recentCommitsSummary
+                  "
+                  class="t-authors"
+                >
+                  <div class="t-authors-title">
+                    近 {{ timelineState[id].recentCommitsSummary.windowHours }} 小时内有提交的成员
+                    <span class="t-authors-branch">（{{ timelineState[id].recentCommitsSummary.branch }}）</span>
+                  </div>
+                  <ul v-if="timelineState[id].recentCommitsSummary.authors.length" class="t-authors-list">
+                    <li
+                      v-for="a in timelineState[id].recentCommitsSummary.authors"
+                      :key="a.email"
+                    >
+                      <span class="a-name">{{ a.name }}</span>
+                      <el-tooltip :content="a.email" placement="top" effect="dark">
+                        <span class="a-meta">{{ a.commitCount }} 笔提交</span>
+                      </el-tooltip>
+                    </li>
+                  </ul>
+                  <div v-else class="t-authors-empty">
+                    无记录（可能无人提交、历史过浅或未能加深 fetch）
+                  </div>
                 </div>
               </div>
             </div>
@@ -678,6 +710,56 @@ onBeforeUnmount(() => {
   margin-top: 2px;
   font-size: 11px;
   color: #a5b4fc;
+}
+
+.t-authors {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+}
+
+.t-authors-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: #e2e8f0;
+  letter-spacing: 0.02em;
+}
+
+.t-authors-branch {
+  font-weight: 500;
+  color: #7dd3fc;
+}
+
+.t-authors-list {
+  margin: 6px 0 0;
+  padding-left: 1rem;
+  font-size: 11px;
+  color: #cbd5e1;
+  line-height: 1.5;
+}
+
+.t-authors-list li {
+  margin: 2px 0;
+}
+
+.t-authors-list .a-name {
+  font-weight: 600;
+  color: #f1f5f9;
+  margin-right: 6px;
+}
+
+.t-authors-list .a-meta {
+  cursor: default;
+  color: #94a3b8;
+  border-bottom: 1px dashed rgba(148, 163, 184, 0.5);
+}
+
+.t-authors-empty {
+  margin-top: 6px;
+  font-size: 11px;
+  color: #94a3b8;
 }
 
 .log-section {
