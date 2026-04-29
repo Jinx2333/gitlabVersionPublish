@@ -1,0 +1,25 @@
+{
+  "name": "intranet-frontend-publish",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server/index.js",
+    "start:prod": "npm run build:client && node server/index.js",
+    "dev": "node --watch server/index.js",
+    "dev:client": "npm run dev --prefix client",
+    "build:client": "npm run build --prefix client",
+    "db:init": "node server/db/dbAdmin.js init",
+    "db:prune-junk": "node server/db/dbAdmin.js prune-junk",
+    "db:reset-all": "node server/db/dbAdmin.js reset-all"
+  },
+  "dependencies": {
+    "archiver": "^7.0.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "lowdb": "^7.0.1",
+    "node-ssh": "^13.2.0",
+    "simple-git": "^3.27.0"
+  }
+}
