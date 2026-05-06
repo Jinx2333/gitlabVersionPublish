@@ -5,7 +5,7 @@ import ReleaseConsoleBackground from './components/ReleaseConsoleBackground.vue'
 import ProjectFormDialog from './components/ProjectFormDialog.vue';
 import ProjectBuildDialog from './components/ProjectBuildDialog.vue';
 import DeployHistoryDrawer from './components/DeployHistoryDrawer.vue';
-import { fetchProjects, deleteProject } from './api/projects.js';
+import { fetchProjects, deleteProject, downloadLastDist } from './api/projects.js';
 import { fetchStatsSummary } from './api/stats.js';
 import { checkApiHealth } from './api/health.js';
 import { formatDateTime } from './utils/format.js';
@@ -213,6 +213,15 @@ async function onDelete(row) {
     await loadProjects();
   } catch (e) {
     ElMessage.error(e.message || '删除失败');
+  }
+}
+
+async function onDownloadLastDist(row) {
+  try {
+    await downloadLastDist(row.id);
+    ElMessage.success('已开始下载');
+  } catch (e) {
+    ElMessage.error(e.message || '下载失败');
   }
 }
 
@@ -439,6 +448,9 @@ onUnmounted(() => {
                   <th class="th-category">
                     分类
                   </th>
+                  <th class="th-last-published">
+                    上次发布时间
+                  </th>
                   <th>当前状态</th>
                   <th>Node / Git</th>
                   <th>Endpoint</th>
@@ -467,6 +479,13 @@ onUnmounted(() => {
                     <span class="category-pill">{{
                       row.bizCategory ?? DEFAULT_BIZ_CATEGORY
                     }}</span>
+                  </td>
+                  <td class="td-last-published">
+                    {{
+                      row.lastSuccessAt
+                        ? formatDateTime(row.lastSuccessAt)
+                        : '—'
+                    }}
                   </td>
                   <td>
                     <span
@@ -548,6 +567,19 @@ onUnmounted(() => {
                   </td>
                   <td class="td-ops">
                     <div class="ops-row">
+                      <button
+                        type="button"
+                        class="op-btn op-dl"
+                        title="下载上次文件"
+                        :disabled="!row.hasLastDistArtifact"
+                        @click="onDownloadLastDist(row)"
+                      >
+                        <svg class="op-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                          <polyline points="7 10 12 15 17 10" />
+                          <line x1="12" y1="15" x2="12" y2="3" />
+                        </svg>
+                      </button>
                       <button
                         type="button"
                         class="op-btn op-primary"
@@ -1308,6 +1340,18 @@ body {
   white-space: nowrap;
 }
 
+.data-table .th-last-published {
+  width: 140px;
+  white-space: nowrap;
+}
+
+.data-table .td-last-published {
+  font-size: 12px;
+  color: #cbd5e1;
+  font-family: ui-monospace, Consolas, monospace;
+  vertical-align: top;
+}
+
 .data-table .th-jump {
   text-align: center;
   width: 100px;
@@ -1603,6 +1647,17 @@ body {
 .op-primary:hover:not(:disabled) {
   background: #06b6d4;
   color: #0f172a;
+}
+
+.op-dl {
+  border-color: rgba(167, 139, 250, 0.35);
+  background: rgba(139, 92, 246, 0.12);
+  color: #c4b5fd;
+}
+
+.op-dl:hover:not(:disabled) {
+  background: rgba(139, 92, 246, 0.35);
+  color: #f5f3ff;
 }
 
 .op-danger:hover:not(:disabled) {

@@ -10,6 +10,8 @@ import { NodeSSH } from 'node-ssh';
 import { getGitlabAuth, getNvmHome, getDeployWorkRootBase } from '../config/env.js';
 import { cleanupStaleDeployWorkdirs } from './deployCleanup.js';
 import { summarizeRecentCommitters } from './gitRecentAuthors.js';
+import { saveLastDistZip } from './projectArtifacts.js';
+import { execSshCommand } from './sshRemote.js';
 
 /**
  * 将常见内网 / SSH 写法规范成可用 HTTP 克隆地址（再嵌入账号密码）
@@ -264,20 +266,70 @@ export async function runDeploy(project, onLog, onStep) {
     });
 
     const remoteBase = project.serverPath.replace(/\/$/, '');
-    log(`准备远程目录: ${remoteBase}`);
-    await ssh.execCommand(`mkdir -p "${remoteBase}"`);
-    await ssh.execCommand(`rm -rf "${remoteBase}"/*`);
+    const useSudoRoot = Boolean(project.sshSudoSuRoot);
+    const switchPw = String(project.rootSwitchPassword ?? '').trim();
+    if (useSudoRoot && !switchPw) {
+      throw new Error(
+        '已勾选「登录后切换 root 账号」，请在项目中配置「切换密码」',
+      );
+    }
 
-    const remoteZip = `${remoteBase}/dist.zip`;
-    log(`上传 ${zipPath} -> ${remoteZip}`);
-    await ssh.putFile(zipPath, remoteZip);
+    const exec = (cmd) =>
+      execSshCommand(ssh, cmd, useSudoRoot ? project.rootSwitchPassword : null);
 
-    log('远程解压…');
-    const unzip = await ssh.execCommand(
-      `cd "${remoteBase}" && unzip -o dist.zip && rm -f dist.zip`,
-    );
-    if (unzip.code !== 0) {
-      throw new Error(`远程解压失败: ${unzip.stderr || unzip.stdout}`);
+    if (useSudoRoot) {
+      log('远程部署将使用 sudo 提权（切换密码通过 stdin 传入 sudo -S）…');
+      const slug = String(project.id).replace(/-/g, '').slice(0, 12);
+      const tmpZip = `/tmp/fe-deploy-${slug}.zip`;
+      log(`准备远程目录: ${remoteBase}`);
+      const prep = [
+        `mkdir -p ${JSON.stringify(remoteBase)}`,
+        `rm -rf ${JSON.stringify(remoteBase)}/*`,
+      ].join(' && ');
+      const prepRes = await exec(prep);
+      if (prepRes.code !== 0) {
+        throw new Error(
+          `远程准备目录失败: ${prepRes.stderr || prepRes.stdout}`,
+        );
+      }
+      log(`上传 ${zipPath} -> ${tmpZip}（临时文件，再由 root 部署至目标目录）`);
+      await ssh.putFile(zipPath, tmpZip);
+      log('远程解压（root）…');
+      const innerCmd = [
+        `cp ${JSON.stringify(tmpZip)} ${JSON.stringify(`${remoteBase}/dist.zip`)}`,
+        `cd ${JSON.stringify(remoteBase)} && unzip -o dist.zip && rm -f dist.zip`,
+        `rm -f ${JSON.stringify(tmpZip)}`,
+      ].join(' && ');
+      const unzip = await exec(innerCmd);
+      if (unzip.code !== 0) {
+        throw new Error(`远程解压失败: ${unzip.stderr || unzip.stdout}`);
+      }
+    } else {
+      log(`准备远程目录: ${remoteBase}`);
+      const mk = await exec(`mkdir -p "${remoteBase}"`);
+      if (mk.code !== 0) {
+        throw new Error(`创建远程目录失败: ${mk.stderr || mk.stdout}`);
+      }
+      const rmOld = await exec(`rm -rf "${remoteBase}"/*`);
+      if (rmOld.code !== 0) {
+        throw new Error(`清理远程目录失败: ${rmOld.stderr || rmOld.stdout}`);
+      }
+      const remoteZip = `${remoteBase}/dist.zip`;
+      log(`上传 ${zipPath} -> ${remoteZip}`);
+      await ssh.putFile(zipPath, remoteZip);
+      log('远程解压…');
+      const unzip = await exec(
+        `cd "${remoteBase}" && unzip -o dist.zip && rm -f dist.zip`,
+      );
+      if (unzip.code !== 0) {
+        throw new Error(`远程解压失败: ${unzip.stderr || unzip.stdout}`);
+      }
+    }
+    try {
+      await saveLastDistZip(project.id, zipPath);
+      log('已保存本次打包 zip 供本地下载（上次发布包）');
+    } catch (e) {
+      log(`[提示] 保存本地上次打包副本失败: ${e.message}`);
     }
     emitStep(onStep, 'push', 'end');
 

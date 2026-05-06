@@ -29,6 +29,8 @@ const emptyForm = () => ({
   installCommand: 'npm ci',
   buildCommand: 'npm run build',
   serverIp: '',
+  sshSudoSuRoot: false,
+  rootSwitchPassword: '',
   serverUser: '',
   serverPassword: '',
   serverPath: '',
@@ -45,7 +47,7 @@ const isEdit = computed(() => Boolean(props.editing?.id));
 
 const title = computed(() => (isEdit.value ? '编辑项目' : '新增项目'));
 
-const rules = {
+const rules = computed(() => ({
   name: [{ required: true, message: '请输入项目名', trigger: 'blur' }],
   gitUrl: [{ required: true, message: '请输入 Git 地址', trigger: 'blur' }],
   branch: [{ required: true, message: '请输入分支', trigger: 'blur' }],
@@ -54,18 +56,52 @@ const rules = {
   buildCommand: [{ required: true, message: '请输入打包命令', trigger: 'blur' }],
   serverIp: [{ required: true, message: '请输入服务器 IP', trigger: 'blur' }],
   serverUser: [{ required: true, message: '请输入服务器账号', trigger: 'blur' }],
-  serverPassword: [{ required: true, message: '请输入服务器密码', trigger: 'blur' }],
+  serverPassword: isEdit.value
+    ? []
+    : [{ required: true, message: '请输入服务器密码', trigger: 'blur' }],
   serverPath: [{ required: true, message: '请输入服务器资源目录', trigger: 'blur' }],
   bizCategory: [{ required: true, message: '请选择业务分类', trigger: 'change' }],
-};
+  rootSwitchPassword: [
+    {
+      validator: (_rule, v, cb) => {
+        if (!form.value.sshSudoSuRoot) {
+          cb();
+          return;
+        }
+        if (isEdit.value && !String(v ?? '').trim()) {
+          cb();
+          return;
+        }
+        if (!isEdit.value && !String(v ?? '').trim()) {
+          cb(new Error('勾选「切换 root」时请填写切换密码'));
+          return;
+        }
+        cb();
+      },
+      trigger: 'blur',
+    },
+  ],
+}));
 
 watch(
   () => props.modelValue,
   (open) => {
     if (!open) return;
-    form.value = props.editing?.id
-      ? { ...emptyForm(), ...props.editing }
-      : emptyForm();
+    if (props.editing?.id) {
+      const {
+        serverPassword: _sp,
+        rootSwitchPassword: _rp,
+        ...rest
+      } = props.editing;
+      form.value = {
+        ...emptyForm(),
+        ...rest,
+        serverPassword: '',
+        rootSwitchPassword: '',
+      };
+    } else {
+      form.value = emptyForm();
+    }
   },
 );
 
@@ -82,6 +118,15 @@ async function onSubmit() {
   submitting.value = true;
   try {
     const payload = { ...form.value };
+    if (!payload.sshSudoSuRoot) {
+      payload.rootSwitchPassword = '';
+    }
+    if (isEdit.value && !String(payload.serverPassword ?? '').trim()) {
+      delete payload.serverPassword;
+    }
+    if (isEdit.value && !String(payload.rootSwitchPassword ?? '').trim()) {
+      delete payload.rootSwitchPassword;
+    }
     if (isEdit.value) {
       await updateProject(props.editing.id, payload);
       ElMessage.success('已保存');
@@ -111,6 +156,7 @@ async function onSubmit() {
       ref="formRef"
       :model="form"
       :rules="rules"
+      autocomplete="off"
       label-width="120px"
       label-position="right"
     >
@@ -168,6 +214,24 @@ async function onSubmit() {
       <el-form-item label="服务器 IP" prop="serverIp">
         <el-input v-model="form.serverIp" placeholder="10.0.0.12" clearable />
       </el-form-item>
+      <el-form-item label=" ">
+        <el-checkbox v-model="form.sshSudoSuRoot">
+          登录后切换 root 账号（远程通过 sudo -S 提权执行部署）
+        </el-checkbox>
+      </el-form-item>
+      <el-form-item
+        v-if="form.sshSudoSuRoot"
+        label="切换密码"
+        prop="rootSwitchPassword"
+      >
+        <el-input
+          v-model="form.rootSwitchPassword"
+          type="password"
+          :placeholder="isEdit ? '留空则沿用已保存的切换密码' : 'sudo / su 提权用密码'"
+          autocomplete="new-password"
+          clearable
+        />
+      </el-form-item>
       <el-form-item label="服务器账号" prop="serverUser">
         <el-input v-model="form.serverUser" placeholder="SSH 登录用户名" clearable />
       </el-form-item>
@@ -175,8 +239,8 @@ async function onSubmit() {
         <el-input
           v-model="form.serverPassword"
           type="password"
-          show-password
-          placeholder="SSH 密码"
+          :placeholder="isEdit ? '留空则不修改密码' : 'SSH 密码'"
+          :autocomplete="isEdit ? 'new-password' : 'new-password'"
           clearable
         />
       </el-form-item>

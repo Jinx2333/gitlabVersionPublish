@@ -28,6 +28,8 @@ function migrateData(data) {
     if (p.lastDeployError === undefined) p.lastDeployError = null;
     if (p.loginUrl === undefined) p.loginUrl = '';
     if (p.bizCategory === undefined) p.bizCategory = 'other';
+    if (p.sshSudoSuRoot === undefined) p.sshSudoSuRoot = false;
+    if (p.rootSwitchPassword === undefined) p.rootSwitchPassword = '';
   }
 }
 
