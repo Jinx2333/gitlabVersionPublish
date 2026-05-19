@@ -47,6 +47,7 @@ export function persistDeployOutcome({
   publisherIp,
   pipelineSteps,
   stepsReplay,
+  buildOnly,
 }) {
   return enqueueDbWrite(async () => {
     const db = await getDb();
@@ -65,7 +66,9 @@ export function persistDeployOutcome({
       startedAt,
       finishedAt,
       status: success ? 'success' : 'failed',
-      summary: success ? '发布成功' : (errorMessage || '发布失败'),
+      summary: success
+        ? (buildOnly ? '打包成功' : '发布成功')
+        : (errorMessage || (buildOnly ? '打包失败' : '发布失败')),
       logText: trimLogText(logText),
       publisherIp: publisherIp ?? null,
       pipelineSteps: steps,

@@ -51,6 +51,10 @@ function appendStep(jobId, payload) {
   }
 }
 
+function parseBool01(v) {
+  return v === true || v === 'true' || v === 1;
+}
+
 router.post('/', async (req, res, next) => {
   try {
     const projectId = req.body?.projectId;
@@ -91,17 +95,18 @@ router.post('/', async (req, res, next) => {
     res.status(202).json({ jobId });
 
     const projectSnapshot = { ...project };
+    const backupBeforeBuild = parseBool01(req.body?.backupBeforeBuild);
 
     const log = (line) => appendLog(jobId, line);
 
     const onStep = (payload) => {
       appendStep(jobId, payload);
-      if (payload.phase === 'start') {
+      if (payload.step && payload.phase === 'start') {
         setDeployStep(projectId, payload.step);
       }
     };
 
-    runDeploy(projectSnapshot, log, onStep).then(
+    runDeploy(projectSnapshot, log, onStep, { backupBeforeBuild }).then(
       async () => {
         const finishedAt = new Date().toISOString();
         const job = jobs.get(jobId);
@@ -119,6 +124,7 @@ router.post('/', async (req, res, next) => {
             logText,
             publisherIp,
             pipelineSteps: replayToPipeline(stepsReplay),
+            buildOnly: Boolean(projectSnapshot.buildOnly),
           });
         } catch (e) {
           console.error('持久化部署结果失败', e);
@@ -142,6 +148,7 @@ router.post('/', async (req, res, next) => {
             logText,
             publisherIp,
             pipelineSteps: replayToPipeline(stepsReplay),
+            buildOnly: Boolean(projectSnapshot.buildOnly),
           });
         } catch (e) {
           console.error('持久化部署结果失败', e);

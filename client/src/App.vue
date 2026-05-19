@@ -4,6 +4,7 @@ import { ElMessageBox, ElMessage } from 'element-plus';
 import ReleaseConsoleBackground from './components/ReleaseConsoleBackground.vue';
 import ProjectFormDialog from './components/ProjectFormDialog.vue';
 import ProjectBuildDialog from './components/ProjectBuildDialog.vue';
+import ProjectBackupDialog from './components/ProjectBackupDialog.vue';
 import DeployHistoryDrawer from './components/DeployHistoryDrawer.vue';
 import { fetchProjects, deleteProject, downloadLastDist } from './api/projects.js';
 import { fetchStatsSummary } from './api/stats.js';
@@ -41,6 +42,13 @@ const buildProjectId = ref(null);
 const buildProject = computed(
   () =>
     projectList.value.find((p) => p.id === buildProjectId.value) ?? null,
+);
+
+const backupVisible = ref(false);
+const backupProjectId = ref(null);
+const backupProject = computed(
+  () =>
+    projectList.value.find((p) => p.id === backupProjectId.value) ?? null,
 );
 
 const historyVisible = ref(false);
@@ -191,6 +199,12 @@ function openAdd() {
 function openEdit(row) {
   editingProject.value = { ...row };
   formVisible.value = true;
+}
+
+async function openBackup(row) {
+  await loadProjects({ kind: 'silent' });
+  backupProjectId.value = row.id;
+  backupVisible.value = true;
 }
 
 async function onDelete(row) {
@@ -414,7 +428,7 @@ onUnmounted(() => {
                 :class="{ 'is-open': filterOpen }"
                 @click="toggleFilters"
               >
-                Filters
+              筛选
               </button>
               <button type="button" class="btn-sync" @click="syncLogs">
                 Sync Logs
@@ -448,14 +462,15 @@ onUnmounted(() => {
                   <th class="th-category">
                     分类
                   </th>
-                  <th class="th-last-published">
-                    上次发布时间
-                  </th>
                   <th>当前状态</th>
-                  <th>Node / Git</th>
-                  <th>Endpoint</th>
+                  <th class="th-info">
+                    信息
+                  </th>
                   <th class="th-jump">
                     部署页跳转
+                  </th>
+                  <th class="th-build">
+                    构建
                   </th>
                   <th class="th-ops">
                     操作
@@ -469,9 +484,12 @@ onUnmounted(() => {
                   class="data-row"
                   :style="{ animationDelay: `${0.02 * index}s` }"
                 >
-                  <td>
+                  <td class="td-project">
                     <div class="cell-project">
-                      <span class="proj-name">{{ row.name }}</span>
+                      <span
+                        class="proj-name"
+                        :class="{ 'proj-name-compact': (row.name || '').length > 4 }"
+                      >{{ row.name }}</span>
                       <span class="proj-remark">{{ row.remark || '—' }}</span>
                     </div>
                   </td>
@@ -479,13 +497,6 @@ onUnmounted(() => {
                     <span class="category-pill">{{
                       row.bizCategory ?? DEFAULT_BIZ_CATEGORY
                     }}</span>
-                  </td>
-                  <td class="td-last-published">
-                    {{
-                      row.lastSuccessAt
-                        ? formatDateTime(row.lastSuccessAt)
-                        : '—'
-                    }}
                   </td>
                   <td>
                     <span
@@ -515,20 +526,6 @@ onUnmounted(() => {
                     </div>
                   </td>
                   <td>
-                    <div class="cell-git">
-                      <div class="git-branch">
-                        <svg class="icon-git" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                          <line x1="6" y1="3" x2="6" y2="15" />
-                          <circle cx="18" cy="6" r="3" />
-                          <circle cx="6" cy="18" r="3" />
-                          <path d="M18 9a9 9 0 0 1-9 9" />
-                        </svg>
-                        <span class="truncate">{{ row.branch }}</span>
-                      </div>
-                      <span class="node-pill">v{{ row.nodeVersion }}</span>
-                    </div>
-                  </td>
-                  <td>
                     <div class="cell-endpoint">
                       <svg class="icon-srv" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <rect x="2" y="2" width="20" height="8" rx="2" ry="2" />
@@ -538,7 +535,14 @@ onUnmounted(() => {
                       </svg>
                       <span>{{ row.serverIp || '—' }}</span>
                     </div>
-                    <div class="last-ok">
+                    <div
+                      class="last-ok"
+                      :title="
+                        row.lastSuccessAt
+                          ? `成功 ${formatDateTime(row.lastSuccessAt)}`
+                          : undefined
+                      "
+                    >
                       成功 {{ formatDateTime(row.lastSuccessAt) }}
                     </div>
                   </td>
@@ -565,6 +569,29 @@ onUnmounted(() => {
                     </button>
                     <span v-else class="jump-empty">—</span>
                   </td>
+                  <td class="td-build">
+                    <button
+                      type="button"
+                      class="btn-jump"
+                      title="构建"
+                      :disabled="row.runtimeBuild?.active"
+                      @click="openBuild(row)"
+                    >
+                      <svg
+                        class="icon-build"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        aria-hidden="true"
+                      >
+                        <path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z" />
+                        <path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z" />
+                      </svg>
+                    </button>
+                  </td>
                   <td class="td-ops">
                     <div class="ops-row">
                       <button
@@ -582,14 +609,15 @@ onUnmounted(() => {
                       </button>
                       <button
                         type="button"
-                        class="op-btn op-primary"
-                        title="构建"
-                        :disabled="row.runtimeBuild?.active"
-                        @click="openBuild(row)"
+                        class="op-btn op-backup"
+                        title="创建备份"
+                        :disabled="row.buildOnly"
+                        @click="openBackup(row)"
                       >
-                        <svg class="op-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                          <path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z" />
-                          <path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z" />
+                        <svg class="op-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                          <path d="M3 12a9 9 0 1 0 3-6.7" />
+                          <path d="M3 4v5h5" />
+                          <path d="M12 7v5l3 2" />
                         </svg>
                       </button>
                       <button
@@ -670,6 +698,11 @@ onUnmounted(() => {
       @deploy-ended="onDeployEnded"
     />
 
+    <ProjectBackupDialog
+      v-model="backupVisible"
+      :project="backupProject"
+    />
+
     <DeployHistoryDrawer
       v-model="historyVisible"
       :project-id="historyProjectId"
@@ -693,11 +726,11 @@ body {
 
 <style scoped>
 .release-app {
-  min-height: 100vh;
+  height: 100vh;
   color: #f8fafc;
   font-family: ui-sans-serif, system-ui, 'Segoe UI', Roboto, 'Helvetica Neue',
     Arial, sans-serif;
-  overflow-x: hidden;
+  overflow: hidden;
   position: relative;
   background: #050508;
 }
@@ -708,7 +741,8 @@ body {
   max-width: 1440px;
   margin: 0 auto;
   padding: 2rem 1.5rem 2.5rem;
-  min-height: 100vh;
+  height: 100vh;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
@@ -852,6 +886,7 @@ body {
   grid-template-columns: 1fr;
   gap: 1.5rem;
   flex: 1;
+  min-height: 0;
 }
 
 @media (min-width: 1024px) {
@@ -1080,7 +1115,7 @@ body {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  min-height: 520px;
+  min-height: 0;
 }
 
 @media (min-width: 768px) {
@@ -1267,8 +1302,31 @@ body {
 .table-wrap {
   position: relative;
   flex: 1;
-  overflow-x: auto;
-  min-height: 420px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  min-height: 0;
+  scrollbar-color: rgba(6, 182, 212, 0.72) rgba(15, 23, 42, 0.72);
+  scrollbar-width: thin;
+}
+
+.table-wrap::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.table-wrap::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.72);
+  border-radius: 999px;
+}
+
+.table-wrap::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #22d3ee, #0891b2);
+  border: 2px solid rgba(15, 23, 42, 0.72);
+  border-radius: 999px;
+}
+
+.table-wrap::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, #67e8f9, #06b6d4);
 }
 
 .table-loading {
@@ -1307,8 +1365,36 @@ body {
 }
 
 .data-table {
+  --table-columns:
+    minmax(0, 1.35fr)
+    minmax(0, 0.55fr)
+    minmax(0, 0.7fr)
+    minmax(0, 1.45fr)
+    minmax(0, 0.8fr)
+    minmax(0, 0.65fr)
+    minmax(0, 1.45fr);
+  display: block;
   width: 100%;
   border-collapse: collapse;
+}
+
+.data-table thead,
+.data-table tbody {
+  display: block;
+}
+
+.data-table thead {
+  position: sticky;
+  top: 0;
+  z-index: 15;
+  background: rgba(15, 23, 42, 0.96);
+  backdrop-filter: blur(12px);
+}
+
+.data-table tr {
+  display: grid;
+  grid-template-columns: var(--table-columns);
+  align-items: stretch;
 }
 
 .data-table thead tr {
@@ -1323,6 +1409,8 @@ body {
   padding: 1.25rem 1rem;
   text-align: left;
   font-weight: 700;
+  min-width: 0;
+  box-sizing: border-box;
 }
 
 .data-table .th-project {
@@ -1335,36 +1423,29 @@ body {
   }
 }
 
+.data-table .th-build {
+  text-align: center;
+  white-space: nowrap;
+}
+
 .data-table .th-category {
-  width: 5.5rem;
   white-space: nowrap;
-}
-
-.data-table .th-last-published {
-  width: 140px;
-  white-space: nowrap;
-}
-
-.data-table .td-last-published {
-  font-size: 12px;
-  color: #cbd5e1;
-  font-family: ui-monospace, Consolas, monospace;
-  vertical-align: top;
 }
 
 .data-table .th-jump {
   text-align: center;
-  width: 100px;
+  white-space: nowrap;
 }
 
 .data-table .th-ops {
   text-align: right;
   padding-right: 1.5rem;
+  white-space: nowrap;
 }
 
 @media (min-width: 768px) {
   .data-table .th-ops {
-    padding-right: 2.5rem;
+    padding-right: 1.5rem;
   }
 }
 
@@ -1381,16 +1462,23 @@ body {
 .data-table td {
   padding: 1rem 1rem;
   vertical-align: top;
+  min-width: 0;
+  box-sizing: border-box;
 }
 
-.data-table td:first-child {
+.data-table .td-project {
   padding-left: 1.5rem;
 }
 
 @media (min-width: 768px) {
-  .data-table td:first-child {
+  .data-table .td-project {
     padding-left: 2.5rem;
   }
+}
+
+.td-build {
+  text-align: center;
+  vertical-align: middle;
 }
 
 .td-jump {
@@ -1413,13 +1501,23 @@ body {
   transition: background 0.15s, transform 0.15s, box-shadow 0.15s;
 }
 
-.btn-jump:hover {
+.btn-jump:hover:not(:disabled) {
   background: rgba(6, 182, 212, 0.28);
   box-shadow: 0 0 16px rgba(6, 182, 212, 0.35);
   transform: scale(1.06);
 }
 
+.btn-jump:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
 .icon-mouse {
+  width: 22px;
+  height: 22px;
+}
+
+.icon-build {
   width: 22px;
   height: 22px;
 }
@@ -1464,6 +1562,10 @@ body {
   color: #f1f5f9;
 }
 
+.proj-name-compact {
+  font-size: 13px;
+}
+
 .category-pill {
   display: inline-block;
   padding: 0.2rem 0.55rem;
@@ -1484,7 +1586,7 @@ body {
   font-size: 10px;
   color: #64748b;
   font-family: ui-monospace, monospace;
-  max-width: 240px;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1537,67 +1639,40 @@ body {
   font-family: ui-monospace, monospace;
 }
 
-.cell-git {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-}
-
-.git-branch {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 12px;
-  color: #94a3b8;
-}
-
-.icon-git {
-  width: 12px;
-  height: 12px;
-  color: rgba(6, 182, 212, 0.7);
-  flex-shrink: 0;
-}
-
-.truncate {
-  max-width: 120px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.node-pill {
-  font-size: 9px;
-  font-family: ui-monospace, monospace;
-  letter-spacing: 0.05em;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  padding: 2px 6px;
-  border-radius: 4px;
-  color: #64748b;
-  width: fit-content;
-}
-
 .cell-endpoint {
   display: flex;
   align-items: center;
   gap: 0.5rem;
   font-size: 13px;
   font-family: ui-monospace, monospace;
-  color: #94a3b8;
+  color: #cbd5e1;
+  min-width: 0;
+}
+
+.cell-endpoint span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .icon-srv {
   width: 14px;
   height: 14px;
-  color: rgba(6, 182, 212, 0.4);
+  color: rgba(34, 211, 238, 0.65);
   flex-shrink: 0;
 }
 
 .last-ok {
   margin-top: 0.35rem;
-  font-size: 10px;
-  color: #475569;
+  font-size: 11px;
+  color: #7dd3fc;
   font-family: ui-monospace, monospace;
+  font-weight: 500;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ops-row {
@@ -1605,8 +1680,9 @@ body {
   justify-content: flex-end;
   align-items: center;
   gap: 0.5rem;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   opacity: 0.75;
+  min-width: 0;
 }
 
 .data-row:hover .ops-row {
@@ -1658,6 +1734,17 @@ body {
 .op-dl:hover:not(:disabled) {
   background: rgba(139, 92, 246, 0.35);
   color: #f5f3ff;
+}
+
+.op-backup {
+  border-color: rgba(34, 211, 238, 0.32);
+  background: rgba(6, 182, 212, 0.1);
+  color: #67e8f9;
+}
+
+.op-backup:hover:not(:disabled) {
+  background: rgba(6, 182, 212, 0.28);
+  color: #ecfeff;
 }
 
 .op-danger:hover:not(:disabled) {

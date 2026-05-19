@@ -11,6 +11,7 @@ import { getGitlabAuth, getNvmHome, getDeployWorkRootBase } from '../config/env.
 import { cleanupStaleDeployWorkdirs } from './deployCleanup.js';
 import { summarizeRecentCommitters } from './gitRecentAuthors.js';
 import { saveLastDistZip } from './projectArtifacts.js';
+import { createProjectBackup } from './projectBackups.js';
 import { execSshCommand } from './sshRemote.js';
 
 /**
@@ -165,13 +166,18 @@ function emitStep(onStep, step, phase, extra = {}) {
   onStep({ step, phase, at: new Date().toISOString(), ...extra });
 }
 
+function emitBackup(onStep, phase, extra = {}) {
+  if (typeof onStep !== 'function') return;
+  onStep({ type: 'backup', phase, at: new Date().toISOString(), ...extra });
+}
+
 /**
  * 完整部署：克隆 → 安装 → 构建 → 推送（含压缩与 SSH）
  * @param {object} project
  * @param {(line: string) => void} onLog
  * @param {(ev: { step: string, phase: 'start'|'end', at: string }) => void} [onStep]
  */
-export async function runDeploy(project, onLog, onStep) {
+export async function runDeploy(project, onLog, onStep, options = {}) {
   await cleanupStaleDeployWorkdirs();
 
   const { user, pwd } = getGitlabAuth();
@@ -188,6 +194,23 @@ export async function runDeploy(project, onLog, onStep) {
   await mkdir(repoDir, { recursive: true });
 
   try {
+    let backupPromise = null;
+    if (options.backupBeforeBuild && !project.buildOnly) {
+      emitBackup(onStep, 'start');
+      log('已启用同步创建当前备份，备份任务开始执行');
+      backupPromise = createProjectBackup(project)
+        .then((backup) => {
+          emitBackup(onStep, 'end', { filename: backup.filename });
+          log(`当前文件备份完成: ${backup.filename}`);
+          return backup;
+        })
+        .catch((e) => {
+          emitBackup(onStep, 'error', { message: e.message });
+          log(`[错误] 当前文件备份失败: ${e.message}`);
+          throw e;
+        });
+    }
+
     emitStep(onStep, 'clone', 'start');
     log('开始克隆仓库…');
     const git = simpleGit();
@@ -242,6 +265,11 @@ export async function runDeploy(project, onLog, onStep) {
     await run(project.installCommand);
     emitStep(onStep, 'install', 'end');
 
+    if (backupPromise) {
+      log('打包前检查当前备份状态…');
+      await backupPromise;
+    }
+
     emitStep(onStep, 'build', 'start');
     log(`执行打包: ${project.buildCommand}`);
     await run(project.buildCommand);
@@ -252,9 +280,23 @@ export async function runDeploy(project, onLog, onStep) {
       throw new Error(`打包后未找到 dist 目录: ${distDir}`);
     }
 
-    emitStep(onStep, 'push', 'start');
     log('压缩 dist…');
     await zipDirectory(distDir, zipPath);
+    try {
+      await saveLastDistZip(project.id, zipPath);
+      log('已保存本次打包 zip，可在构建与发布弹窗中下载');
+    } catch (e) {
+      log(`[提示] 保存本地打包副本失败: ${e.message}`);
+      if (project.buildOnly) {
+        throw e;
+      }
+    }
+    if (project.buildOnly) {
+      log('打包完成');
+      return;
+    }
+
+    emitStep(onStep, 'push', 'start');
 
     const ssh = new NodeSSH();
     log(`连接服务器 ${project.serverIp}…`);
@@ -324,12 +366,6 @@ export async function runDeploy(project, onLog, onStep) {
       if (unzip.code !== 0) {
         throw new Error(`远程解压失败: ${unzip.stderr || unzip.stdout}`);
       }
-    }
-    try {
-      await saveLastDistZip(project.id, zipPath);
-      log('已保存本次打包 zip 供本地下载（上次发布包）');
-    } catch (e) {
-      log(`[提示] 保存本地上次打包副本失败: ${e.message}`);
     }
     emitStep(onStep, 'push', 'end');
 

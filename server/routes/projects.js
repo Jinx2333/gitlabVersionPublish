@@ -7,6 +7,13 @@ import { getDb, DB_DATA_DIR } from '../db/lowdb.js';
 import { isValidStoredProject } from '../db/projectHelpers.js';
 import { getRuntimeBuild } from '../state/activeDeploy.js';
 import { getLastDistZipPath } from '../services/projectArtifacts.js';
+import {
+  createProjectBackup,
+  deleteProjectBackup,
+  getProjectBackupPath,
+  listProjectBackups,
+  removeProjectBackups,
+} from '../services/projectBackups.js';
 
 const router = Router();
 
@@ -72,7 +79,7 @@ router.get('/:id/download-last-dist', async (req, res, next) => {
     }
     const zipPath = getLastDistZipPath(p.id);
     if (!existsSync(zipPath)) {
-      res.status(404).json({ message: '暂无已保存的上次打包文件，请先成功发布一次' });
+      res.status(404).json({ message: '暂无已保存的打包文件，请先成功打包或发布一次' });
       return;
     }
     const rawName = String(p.name || 'dist').replace(/[\\/:*?"<>|]+/g, '_');
@@ -83,6 +90,75 @@ router.get('/:id/download-last-dist', async (req, res, next) => {
       `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`,
     );
     createReadStream(zipPath).pipe(res);
+  } catch (e) {
+    next(e);
+  }
+});
+
+router.get('/:id/backups', async (req, res, next) => {
+  try {
+    const db = await getDb();
+    const p = db.data.projects.find((x) => x.id === req.params.id);
+    if (!p) {
+      res.status(404).json({ message: '项目不存在' });
+      return;
+    }
+    res.json(await listProjectBackups(p.id));
+  } catch (e) {
+    next(e);
+  }
+});
+
+router.post('/:id/backups', async (req, res, next) => {
+  try {
+    const db = await getDb();
+    const p = db.data.projects.find((x) => x.id === req.params.id);
+    if (!p) {
+      res.status(404).json({ message: '项目不存在' });
+      return;
+    }
+    const backup = await createProjectBackup(p);
+    res.status(201).json(backup);
+  } catch (e) {
+    next(e);
+  }
+});
+
+router.get('/:id/backups/:filename/download', async (req, res, next) => {
+  try {
+    const db = await getDb();
+    const p = db.data.projects.find((x) => x.id === req.params.id);
+    if (!p) {
+      res.status(404).json({ message: '项目不存在' });
+      return;
+    }
+    const filename = path.basename(String(req.params.filename ?? ''));
+    const zipPath = getProjectBackupPath(p.id, filename);
+    if (!filename || !existsSync(zipPath)) {
+      res.status(404).json({ message: '备份文件不存在' });
+      return;
+    }
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`,
+    );
+    createReadStream(zipPath).pipe(res);
+  } catch (e) {
+    next(e);
+  }
+});
+
+router.delete('/:id/backups/:filename', async (req, res, next) => {
+  try {
+    const db = await getDb();
+    const p = db.data.projects.find((x) => x.id === req.params.id);
+    if (!p) {
+      res.status(404).json({ message: '项目不存在' });
+      return;
+    }
+    await deleteProjectBackup(p.id, req.params.filename);
+    res.status(204).end();
   } catch (e) {
     next(e);
   }
@@ -100,6 +176,7 @@ router.post('/', async (req, res, next) => {
       nodeVersion: String(body.nodeVersion ?? ''),
       installCommand: String(body.installCommand ?? 'npm ci'),
       buildCommand: String(body.buildCommand ?? 'npm run build'),
+      buildOnly: parseBool01(body.buildOnly),
       serverIp: String(body.serverIp ?? ''),
       serverUser: String(body.serverUser ?? ''),
       serverPassword: String(body.serverPassword ?? ''),
@@ -116,6 +193,15 @@ router.post('/', async (req, res, next) => {
       lastDeployAt: null,
       lastDeployError: null,
     };
+    if (project.buildOnly) {
+      project.serverIp = '';
+      project.serverUser = '';
+      project.serverPassword = '';
+      project.sshSudoSuRoot = false;
+      project.rootSwitchPassword = '';
+      project.serverPath = '';
+      project.loginUrl = '';
+    }
     db.data.projects.push(project);
     await db.write();
     res.status(201).json({
@@ -173,6 +259,15 @@ router.put('/:id', async (req, res, next) => {
       ...body,
       id: prev.id,
     };
+    if (nextProject.buildOnly) {
+      nextProject.serverIp = '';
+      nextProject.serverUser = '';
+      nextProject.serverPassword = '';
+      nextProject.sshSudoSuRoot = false;
+      nextProject.rootSwitchPassword = '';
+      nextProject.serverPath = '';
+      nextProject.loginUrl = '';
+    }
     db.data.projects[idx] = nextProject;
     await db.write();
     const rt = getRuntimeBuild(prev.id);
@@ -208,6 +303,7 @@ router.delete('/:id', async (req, res, next) => {
     await db.write();
     const artDir = path.join(DB_DATA_DIR, 'artifacts', id);
     await rm(artDir, { recursive: true, force: true }).catch(() => {});
+    await removeProjectBackups(id).catch(() => {});
     res.status(204).end();
   } catch (e) {
     next(e);

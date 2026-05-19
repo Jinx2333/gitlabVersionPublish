@@ -66,11 +66,60 @@ export async function downloadLastDist(projectId) {
   URL.revokeObjectURL(a.href);
 }
 
+function parseDownloadFilename(dispo, fallback) {
+  const m = /filename\*=UTF-8''([^;\n]+)/i.exec(dispo || '');
+  return m ? decodeURIComponent(m[1]) : fallback;
+}
+
+async function downloadBlob(url, fallbackFilename) {
+  const res = await fetch(url);
+  if (!res.ok) {
+    let msg = '下载失败';
+    try {
+      const j = await res.json();
+      if (j.message) msg = j.message;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(msg);
+  }
+  const blob = await res.blob();
+  const filename = parseDownloadFilename(
+    res.headers.get('Content-Disposition'),
+    fallbackFilename,
+  );
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+export function fetchProjectBackups(projectId) {
+  return http.get(`/projects/${projectId}/backups`).then((r) => r.data);
+}
+
+export function createProjectBackup(projectId) {
+  return http.post(`/projects/${projectId}/backups`).then((r) => r.data);
+}
+
+export function downloadProjectBackup(projectId, filename) {
+  const safeName = encodeURIComponent(filename);
+  const url = `${getAxiosBaseURL()}/projects/${projectId}/backups/${safeName}/download`;
+  return downloadBlob(url, filename || 'backup.zip');
+}
+
+export function deleteProjectBackup(projectId, filename) {
+  return http.delete(
+    `/projects/${projectId}/backups/${encodeURIComponent(filename)}`,
+  );
+}
+
 /**
  * 触发部署，返回 jobId，再通过 SSE 订阅日志
  */
-export function startDeploy(projectId) {
-  return http.post('/deploy', { projectId }).then((r) => r.data);
+export function startDeploy(projectId, options = {}) {
+  return http.post('/deploy', { projectId, ...options }).then((r) => r.data);
 }
 
 /**

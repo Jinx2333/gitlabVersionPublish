@@ -9,7 +9,11 @@ import {
 } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { fetchDeployLogList } from '../api/logs.js';
-import { startDeploy, getDeployStreamUrl } from '../api/projects.js';
+import {
+  startDeploy,
+  getDeployStreamUrl,
+  downloadLastDist,
+} from '../api/projects.js';
 import { formatDateTime, formatDuration } from '../utils/format.js';
 import LogDetailDialog from './LogDetailDialog.vue';
 
@@ -41,6 +45,8 @@ const logText = ref('');
 const logBox = ref(null);
 const detailVisible = ref(false);
 const selectedLogId = ref(null);
+const syncBackupBeforeBuild = ref(false);
+const backupRunning = ref(false);
 
 const timelineState = reactive({});
 
@@ -69,11 +75,22 @@ function teardownStream() {
 function resetDeployUi() {
   logText.value = '';
   streamEnded = false;
+  backupRunning.value = false;
   initTimeline();
 }
 
 const isProjectBusy = computed(
   () => props.project?.runtimeBuild?.active === true,
+);
+const isBuildOnlyProject = computed(() => Boolean(props.project?.buildOnly));
+const visibleStepOrder = computed(() =>
+  isBuildOnlyProject.value ? ['clone', 'install', 'build'] : STEP_ORDER,
+);
+const deployActionText = computed(() =>
+  isBuildOnlyProject.value ? '开始打包' : '开始发布',
+);
+const busyActionText = computed(() =>
+  isBuildOnlyProject.value ? '打包进行中…' : '构建进行中…',
 );
 
 async function loadHistory() {
@@ -128,7 +145,7 @@ function finishSuccess() {
   streamEnded = true;
   teardownStream();
   emit('deploy-ended', { ok: true });
-  ElMessage.success('发布完成');
+  ElMessage.success(isBuildOnlyProject.value ? '打包完成' : '发布完成');
   window.setTimeout(async () => {
     mode.value = 'history';
     await loadHistory();
@@ -153,7 +170,12 @@ function attachStreamHandlers() {
 
   eventSource.addEventListener('step', (ev) => {
     try {
-      applyStepEvent(JSON.parse(ev.data));
+      const payload = JSON.parse(ev.data);
+      if (payload.type === 'backup') {
+        backupRunning.value = payload.phase === 'start';
+        return;
+      }
+      applyStepEvent(payload);
     } catch {
       /* ignore */
     }
@@ -165,7 +187,7 @@ function attachStreamHandlers() {
       const line = payload.line ?? '';
       logText.value += line;
       scrollLog();
-      if (line.includes('部署完成')) {
+      if (line.includes('部署完成') || line.includes('打包完成')) {
         finishSuccess();
       }
       if (line.includes('[错误]') || line.includes('命令失败')) {
@@ -181,7 +203,7 @@ function attachStreamHandlers() {
   eventSource.onerror = () => {
     if (streamEnded) return;
     if (mode.value !== 'deploying') return;
-    if (logText.value.includes('部署完成')) {
+    if (logText.value.includes('部署完成') || logText.value.includes('打包完成')) {
       finishSuccess();
       return;
     }
@@ -206,7 +228,9 @@ async function onDeployClick() {
   resetDeployUi();
   let jobId;
   try {
-    const data = await startDeploy(props.project.id);
+    const data = await startDeploy(props.project.id, {
+      backupBeforeBuild: syncBackupBeforeBuild.value,
+    });
     jobId = data.jobId;
   } catch (e) {
     ElMessage.error(e.message || '启动失败');
@@ -214,6 +238,16 @@ async function onDeployClick() {
     return;
   }
   connectStream(jobId);
+}
+
+async function onDownloadVersion() {
+  if (!props.project?.id) return;
+  try {
+    await downloadLastDist(props.project.id);
+    ElMessage.success('已开始下载');
+  } catch (e) {
+    ElMessage.error(e.message || '下载失败');
+  }
 }
 
 function openDetail(row) {
@@ -290,6 +324,7 @@ watch(
     }
     if (!projectId) return;
     resetDeployUi();
+    syncBackupBeforeBuild.value = false;
     await loadHistory();
     const rt = props.project?.runtimeBuild;
     if (rt?.active && rt.jobId) {
@@ -332,6 +367,7 @@ onBeforeUnmount(() => {
   <el-dialog
     v-model="visible"
     class="build-dialog"
+    modal-class="build-dialog-overlay"
     width="920px"
     top="5vh"
     destroy-on-close
@@ -358,6 +394,23 @@ onBeforeUnmount(() => {
           <div class="intro-desc">
             以下为该项目历史发布记录（含发布来源 IP）。点击下方「开始发布」进入流水线。
           </div>
+        </div>
+      </div>
+
+      <div class="history-toolbar">
+        <span class="history-toolbar-title">版本记录</span>
+        <div class="history-toolbar-actions">
+          <span v-if="backupRunning" class="backup-running">
+            <span class="backup-spinner" />
+            正在备份
+          </span>
+          <el-button
+            type="primary"
+            :disabled="isProjectBusy || !project?.hasLastDistArtifact"
+            @click="onDownloadVersion"
+          >
+            下载版本
+          </el-button>
         </div>
       </div>
 
@@ -415,8 +468,16 @@ onBeforeUnmount(() => {
           :disabled="isProjectBusy"
           @click="onDeployClick"
         >
-          {{ isProjectBusy ? '构建进行中…' : '开始发布' }}
+          {{ isProjectBusy ? busyActionText : deployActionText }}
         </el-button>
+        <el-checkbox
+          v-if="!isBuildOnlyProject"
+          v-model="syncBackupBeforeBuild"
+          class="sync-backup-check"
+          :disabled="isProjectBusy"
+        >
+          同步创建当前备份
+        </el-checkbox>
       </div>
     </div>
 
@@ -426,14 +487,14 @@ onBeforeUnmount(() => {
           <div class="aside-title">流水线</div>
           <div class="timeline-track">
             <div
-              v-for="id in STEP_ORDER"
+              v-for="id in visibleStepOrder"
               :key="id"
               class="t-node"
             >
               <div class="t-dot-wrap">
                 <span class="t-dot" :class="stepDotClass(id)" />
                 <span
-                  v-if="id !== STEP_ORDER[STEP_ORDER.length - 1]"
+                  v-if="id !== visibleStepOrder[visibleStepOrder.length - 1]"
                   class="t-line"
                   :class="{
                     'is-done':
@@ -486,7 +547,15 @@ onBeforeUnmount(() => {
         <section class="log-section">
           <div class="log-head">
             <span>实时日志</span>
-            <span class="log-hint">clone → install → build → push</span>
+            <span class="log-head-right">
+              <span v-if="backupRunning" class="backup-running">
+                <span class="backup-spinner" />
+                正在备份
+              </span>
+              <span class="log-hint">
+                {{ isBuildOnlyProject ? 'clone → install → build' : 'clone → install → build → push' }}
+              </span>
+            </span>
           </div>
           <div ref="logBox" class="log-terminal">
             <pre class="log-pre">{{ logText }}<span v-if="!streamEnded" class="cursor">▌</span></pre>
@@ -500,25 +569,122 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.build-dialog :deep(.el-dialog__header) {
-  margin: 0;
-  padding: 0;
+:global(.build-dialog-overlay) {
+  background-color: rgba(5, 5, 8, 0.72) !important;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
 }
 
-.build-dialog :deep(.el-dialog) {
+/* class 在 el-dialog 根节点上，不能写 .build-dialog :deep(.el-dialog) */
+:global(.build-dialog) {
+  --el-dialog-bg-color: transparent;
+  --el-color-success: #06b6d4;
+  --el-color-success-light-3: #22d3ee;
+  --el-color-success-dark-2: #0891b2;
   margin-top: 5vh !important;
+  padding: 0;
+  border-radius: 28px;
+  overflow: hidden;
+  border: 1px solid rgba(6, 182, 212, 0.22);
+  background:
+    linear-gradient(135deg, rgba(6, 182, 212, 0.16), rgba(99, 102, 241, 0.12)),
+    rgba(5, 5, 8, 0.88) !important;
+  backdrop-filter: blur(22px) saturate(1.15);
+  -webkit-backdrop-filter: blur(22px) saturate(1.15);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.06) inset,
+    0 0 48px rgba(6, 182, 212, 0.12),
+    0 24px 64px rgba(0, 0, 0, 0.55);
 }
 
-.build-dialog :deep(.el-dialog__body) {
-  padding: 0 0 16px;
+:global(.build-dialog .el-overlay-dialog) {
   overflow: hidden;
 }
 
+:global(.build-dialog .el-dialog__header) {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+}
+
+:global(.build-dialog .el-dialog__headerbtn) {
+  top: 14px;
+  right: 14px;
+  width: 40px;
+  height: 40px;
+}
+
+:global(.build-dialog .el-dialog__close) {
+  color: rgba(248, 250, 252, 0.55);
+  font-size: 18px;
+}
+
+:global(.build-dialog .el-dialog__headerbtn:hover .el-dialog__close) {
+  color: #22d3ee;
+}
+
+:global(.build-dialog .el-dialog__body) {
+  padding: 0 0 16px;
+  overflow: hidden;
+  background: transparent !important;
+  color: #e2e8f0;
+}
+
+:global(.build-dialog .hist-table.el-table) {
+  --el-table-bg-color: transparent;
+  --el-table-tr-bg-color: rgba(15, 23, 42, 0.38);
+  --el-table-header-bg-color: rgba(15, 23, 42, 0.68);
+  --el-table-row-hover-bg-color: rgba(6, 182, 212, 0.08);
+  --el-table-current-row-bg-color: rgba(6, 182, 212, 0.1);
+  --el-table-border-color: rgba(255, 255, 255, 0.08);
+  --el-table-text-color: #e2e8f0;
+  --el-table-header-text-color: #94a3b8;
+  --el-fill-color-lighter: rgba(255, 255, 255, 0.03);
+}
+
+:global(.build-dialog .hist-table .el-table__inner-wrapper::before) {
+  display: none;
+}
+
+:global(.build-dialog .el-table__empty-text) {
+  color: #64748b;
+}
+
+:global(.build-dialog .el-loading-mask) {
+  background-color: rgba(5, 5, 8, 0.72);
+}
+
+:global(.build-dialog .el-button.is-link) {
+  --el-button-text-color: #22d3ee;
+}
+
+:global(.build-dialog .el-button.is-link:hover) {
+  color: #67e8f9;
+}
+
+:global(.build-dialog .el-button--success) {
+  border: none;
+  border-radius: 999px;
+  background: #06b6d4;
+  color: #0f172a;
+  font-weight: 800;
+  box-shadow: 0 0 18px rgba(6, 182, 212, 0.36);
+}
+
+:global(.build-dialog .el-button--success:hover) {
+  background: #22d3ee;
+  color: #0f172a;
+  box-shadow: 0 0 26px rgba(6, 182, 212, 0.5);
+}
+
 .dlg-head {
-  padding: 18px 20px 12px;
-  background: linear-gradient(120deg, #1d4ed8 0%, #0ea5e9 50%, #6366f1 100%);
-  color: #fff;
-  border-radius: 8px 8px 0 0;
+  padding: 18px 44px 12px 20px;
+  background: rgba(255, 255, 255, 0.04);
+  color: #f8fafc;
+  border-radius: 0;
+  border-bottom: 1px solid rgba(6, 182, 212, 0.2);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
 }
 
 .dlg-title {
@@ -541,14 +707,16 @@ onBeforeUnmount(() => {
   padding: 2px 8px;
   border-radius: 999px;
   font-size: 12px;
-  background: rgba(255, 255, 255, 0.22);
-  border: 1px solid rgba(255, 255, 255, 0.35);
+  color: #67e8f9;
+  background: rgba(6, 182, 212, 0.14);
+  border: 1px solid rgba(6, 182, 212, 0.32);
 }
 
 .panel {
   padding: 16px 20px 0;
   min-height: 500px;
   box-sizing: border-box;
+  color: #e2e8f0;
 }
 
 .history-panel .panel-intro {
@@ -557,8 +725,14 @@ onBeforeUnmount(() => {
   padding: 12px 14px;
   margin-bottom: 14px;
   border-radius: 10px;
-  background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
-  border: 1px solid #e2e8f0;
+  background: linear-gradient(
+    180deg,
+    rgba(6, 182, 212, 0.08) 0%,
+    rgba(255, 255, 255, 0.025) 100%
+  );
+  border: 1px solid rgba(6, 182, 212, 0.18);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
 }
 
 .intro-icon {
@@ -568,13 +742,13 @@ onBeforeUnmount(() => {
 
 .intro-title {
   font-weight: 600;
-  color: #0f172a;
+  color: #f1f5f9;
   margin-bottom: 4px;
 }
 
 .intro-desc {
   font-size: 13px;
-  color: #64748b;
+  color: #94a3b8;
   line-height: 1.5;
 }
 
@@ -583,10 +757,85 @@ onBeforeUnmount(() => {
   overflow: hidden;
 }
 
+.history-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.history-toolbar-title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #94a3b8;
+}
+
+.history-toolbar-actions,
+.log-head-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.backup-running {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #67e8f9;
+}
+
+.backup-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(6, 182, 212, 0.22);
+  border-top-color: #22d3ee;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+.history-toolbar :deep(.el-button) {
+  border: none;
+  border-radius: 999px;
+  background: #06b6d4;
+  color: #0f172a;
+  font-weight: 800;
+  box-shadow: 0 0 16px rgba(6, 182, 212, 0.32);
+}
+
+.history-toolbar :deep(.el-button:hover) {
+  background: #22d3ee;
+  color: #0f172a;
+  box-shadow: 0 0 24px rgba(6, 182, 212, 0.46);
+}
+
+.history-toolbar :deep(.el-button.is-disabled) {
+  background: rgba(148, 163, 184, 0.18);
+  color: #64748b;
+  box-shadow: none;
+}
+
 .footer-actions {
   display: flex;
+  flex-direction: column;
+  align-items: center;
   justify-content: center;
+  gap: 10px;
   padding: 18px 0 4px;
+}
+
+.sync-backup-check :deep(.el-checkbox__label) {
+  color: #cbd5e1;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.sync-backup-check :deep(.el-checkbox__input.is-checked .el-checkbox__inner) {
+  border-color: #06b6d4;
+  background-color: #06b6d4;
 }
 
 .deploy-split {
@@ -601,9 +850,11 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
   padding: 12px 14px;
   border-radius: 12px;
-  background: #0f172a;
+  background: rgba(15, 23, 42, 0.54);
   color: #e2e8f0;
-  border: 1px solid #1e293b;
+  border: 1px solid rgba(6, 182, 212, 0.16);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
   overflow-y: auto;
   overflow-x: hidden;
 }
@@ -768,10 +1019,12 @@ onBeforeUnmount(() => {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  border: 1px solid #e2e8f0;
+  border: 1px solid rgba(6, 182, 212, 0.16);
   border-radius: 12px;
   overflow: hidden;
-  background: #fff;
+  background: rgba(15, 23, 42, 0.46);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
 }
 
 .log-head {
@@ -781,9 +1034,9 @@ onBeforeUnmount(() => {
   padding: 10px 12px;
   font-size: 13px;
   font-weight: 600;
-  color: #0f172a;
-  background: #f8fafc;
-  border-bottom: 1px solid #e2e8f0;
+  color: #f1f5f9;
+  background: rgba(255, 255, 255, 0.04);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .log-hint {
@@ -799,7 +1052,7 @@ onBeforeUnmount(() => {
   overflow-y: auto;
   overflow-anchor: none;
   overscroll-behavior: contain;
-  background: #0b1220;
+  background: rgba(5, 5, 8, 0.42);
   padding: 12px;
 }
 
@@ -821,6 +1074,12 @@ onBeforeUnmount(() => {
 @keyframes blink {
   50% {
     opacity: 0;
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
   }
 }
 
